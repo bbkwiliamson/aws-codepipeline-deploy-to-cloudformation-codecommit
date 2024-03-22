@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: creating CodePipeLine to deploy to CloudFormation
+
+Parameters:
+  
+  TeamEmail:
+    Type: String
+    Default: example@example.com
+    Description: team e-amil address
+  TeamName:
+    Type: String
+    Default: example team
+    Description: the name of the team
+  CodePipelineName:
+    Type: String
+    Default: poc-codePipeLine-SamplePipeline
+    Description: the name of the CodePipeline used
+  StackName:
+    Type: String
+    Default: temporary-poc-s3-today-creation
+    Description: this is the name of the stack used to deploy your IAC currently which exists on CloudFormation
+  TemplatePath:
+    Type: String
+    Default: SourceOutput::s3-encryption-bucket.yaml
+    Description: the specific name of the template
+  ServiceRoleName:
+    Type: String
+    Default: Bounded-AWS-SbgDevOps-CodePipeline-Service-Dev
+    Description: the service role name that is used by AWS CodePipeLine
+  ServicePolicyName:
+    Type: String
+    Default: Bounded-CodePipeline-Admin-dev-policy
+    Description: the policy to be attached to the service role
+  DeployRole:
+    Type: String
+    Default: Bounded-AWS-SbgDevOps-CodePipeline-cloudformation-Dev
+    Description: the role which is assumed when deploying to CloudFormation
+  DeployPolicyName:
+    Type: String
+    Default: Bounded-CodePipeline-cloudformation-Admin-dev-policy
+    Description: the policy which is attached to the deployment role by CodePipeline
+  CodeRepoName:
+    Type: String
+    Default: aws-s3-bucket-DEV
+    Description: AWS CodeCommit repo name used by the CodePipeLine
+  
+Resources:
+  # CodePipeline uses this bucket to store temporary packaged files to deploy to CloudFormation
+  S3BucketCodePipeline:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub build-codecommit-${AWS::AccountId}-poc
+      VersioningConfiguration:
+        Status: Enabled
+     
+      Tags:
+        - Key: GroupName
+          Value: 'SGB-DevOps'
+        # - Key: Environment
+        #   Value: !Ref Env
+        - Key: Team-Email
+          Value: !Ref TeamEmail
+        - Key: Tier
+          Value: 'MCA'
+
+  AWSCodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref CodeRepoName
+      RepositoryDescription: storing templates for creating IAC via CodePipeline
+      Tags:
+        - Key: Team-Email
+          Value: !Ref TeamEmail
+        - Key: Team-Name
+          Value: !Ref TeamName
+
+
+  BoundedCodePipelineServiceRole: #creation of CodePipeLine Service role
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref ServiceRoleName
+      #PermissionsBoundary: !Sub "arn:aws:iam::${AWS::AccountId}:policy/BoundedPermissionsPolicy"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: "/bounded/"
+      Policies:
+        - PolicyName: !Ref ServicePolicyName
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                 - "*"
+                 - "codepipeline:*"
+                 - "cloudtrail:DescribeTrails"
+                 - "codebuild:*"
+                 - "codecommit:ListBranches"
+                 - "codecommit:GetReferences"
+                 - "codecommit:ListRepositories"
+                 - "cloudformation:*"
+                 - "codedeploy:*"
+                 - "ec2:DescribeSecurityGroups"
+                 - "ec2:DescribeSubnets"
+                 - "codecommit:*"
+                 - "kms:DescribeKey"
+                 - "kms:Decrypt"
+                Resource: "*"
+  
+  BoundedCodePipelineCloudFormationRole: #creation of CodePipeLine CloudFormation role
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref DeployRole
+      #PermissionsBoundary: !Sub "arn:aws:iam::${AWS::AccountId}:policy/BoundedPermissionsPolicy"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: "/bounded/"
+      Policies:
+        - PolicyName: !Ref DeployPolicyName
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                 - "*"
+                 - "s3:*"
+                 - "rds:*"
+                 - "cloudformation:*"
+                 - "iam:*"
+                 - "appmesh:*"
+                 - "sqs:*"
+                 - "route53:*"
+                 - "application-autoscaling:*"
+                 - "ecs:*"
+                 - "lambda:*"
+                 - "sns:*"
+                 - "ec2:*"
+                 - "logs:*"
+                 - "autoscaling:*"
+                 - "ecr:*"
+                 - "elasticloadbalancing:*"
+                 - "events:*"
+                 - "kms:*"
+                 - "ssm:*"
+                 - "acm:*"
+                 - "apigateway:*"
+                Resource: '*'
+
+
+  MyPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref CodePipelineName
+      RoleArn: !GetAtt BoundedCodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref S3BucketCodePipeline #arn:aws:s3:::build-codecommit-poc
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                RepositoryName: !Ref CodeRepoName # your aws CodeCommit repo name
+                BranchName: main
+              OutputArtifacts:
+                - Name: SourceOutput
+        
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                StackName: !Ref StackName
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt BoundedCodePipelineCloudFormationRole.Arn
+                Capabilities: CAPABILITY_IAM
+                TemplatePath: !Ref TemplatePath
+              InputArtifacts:
+                - Name: SourceOutput
